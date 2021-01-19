@@ -1,0 +1,3 @@
+git+https://github.com/adamlwgriffiths/redis-mock.git@master#redis-mock
+nose
+-r requirements.txt
