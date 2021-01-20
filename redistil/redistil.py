@@ -1,7 +1,8 @@
 from inspect import isclass
+from datetime import date, datetime
 from cerberus import Validator, TypeDefinition
 from ipaddress import IPv4Address, IPv6Address
-from pipeline import PromisePipeline
+from .pipeline import PromisePipeline
 
 def register_types_mapping(data):
     Validator.types_mapping.update(data)
@@ -47,6 +48,7 @@ class FieldType(object, metaclass=FieldTypeMeta):
     schema = None
     save = lambda self, db, key, field, value: db.hset(key, field, value)
     load = lambda self, db, key, field: db.hget(key, field)
+    delete = lambda self, db, key, field: None
     to_db = lambda self, value: value
     from_db = lambda self, value: value
 
@@ -121,6 +123,8 @@ class IPV6Address(FieldType):
 
 
 class ContainerType(FieldType):
+    delete = lambda self, db, key, field: db.delete(f'{key}::{field}')
+
     def __init__(self, type, **kwargs):
         self.type = type() if isclass(type) else type
         if self.type.schema['type'] in ['list', 'set', 'dict']:
@@ -146,6 +150,7 @@ class List(ContainerType):
     save = lambda self, db, key, field, value: replace_list(db, f'{key}::{field}', value)
     load = lambda self, db, key, field: db.lrange(f'{key}::{field}', 0, -1)
 
+
     def __set_name__(self, owner, name):
         self.type.__set_name__(owner, name)
 
@@ -153,7 +158,7 @@ class List(ContainerType):
         return [self.type.set(instance, item) for item in value]
 
     def get(self, instance, value):
-        return [self.type.get(instance, item) for item in value]
+        return [self.type.get(instance, item) for item in value] if value else None
 
 class Set(ContainerType):
     schema = {'type': 'set'}
@@ -167,7 +172,7 @@ class Set(ContainerType):
         return {self.type.set(instance, item) for item in value}
 
     def get(self, instance, value):
-        return {self.type.get(instance, item) for item in value}
+        return {self.type.get(instance, item) for item in value} if value else None
 
 # Dict type not provided as they can just be flattened into the Model
 # or a secondary Model can be referenced
@@ -217,29 +222,37 @@ class Model(object, metaclass=ModelMeta):
     def key(cls, id):
         return f'{cls.__name__}::{id}'
 
+    @classmethod
+    def primary_key(cls):
+        return cls._primary_key
+
+    @classmethod
+    def load(cls, db, id, *fields):
+        # always load the primary key directly from the requested id
+        obj = cls(**{cls.primary_key(): id})
+        obj.load_fields(db, *fields)
+        return obj
+
     def __init__(self, **values):
         self._data = {}
         for k,v in values.items():
             setattr(self, k, v)
-
-    @classmethod
-    def primary_key(cls):
-        return cls._primary_key
 
     @property
     def id(self):
         return self._data.get(self.primary_key())
 
     @property
+    def redis_key(self):
+        primary_field = self._fields.get(self.primary_key())
+        id_ = primary_field.type.to_db(self.id)
+        return self.key(id_)
+
+    @property
     def schema(self):
         return self._schema
 
     def load_fields(self, db, *fields):
-        def redis_key():
-            id = self._data.get(self.primary_key())
-            primary_field = self._fields.get(self.primary_key())
-            id = primary_field.type.to_db(id)
-            return self.key(id)
         def loader(field_name):
             return self._fields.get(field_name).type.load
         def py_value(field_name, value):
@@ -247,7 +260,7 @@ class Model(object, metaclass=ModelMeta):
             return fn(value)
 
         # ensure the id is db friendly
-        key = redis_key()
+        key = self.redis_key
         field_names = {field.name for field in fields} if fields else self._schema.keys()
 
         # create a pipeline and get the values all at once
@@ -261,13 +274,6 @@ class Model(object, metaclass=ModelMeta):
 
         for k,v in values.items():
             setattr(self, k, v)
-
-    @classmethod
-    def load(cls, db, id, *fields):
-        # always load the primary key directly from the requested id
-        obj = cls(**{cls.primary_key(): id})
-        obj.load_fields(db, *fields)
-        return obj
 
     def validate(self, field_names):
         schema = {k:v for k,v in self._schema.items() if k in field_names}
@@ -289,7 +295,7 @@ class Model(object, metaclass=ModelMeta):
             fn = self._fields.get(field_name).type.to_db
             return fn(value)
 
-        key = redis_key()
+        key = self.redis_key
         field_names = {field.name for field in fields} if fields else self._schema.keys()
 
         # normalise and validate
@@ -304,6 +310,24 @@ class Model(object, metaclass=ModelMeta):
             saver(field_name)(p, key, field_name, value)
         p.execute()
 
+    def delete(self, db):
+        def deleter(field_name):
+            return self._fields.get(field_name).type.delete
+        def db_value(field_name, value):
+            fn = self._fields.get(field_name).type.to_db
+            return fn(value)
+
+        key = self.redis_key
+        field_names = self._schema.keys()
+
+        p = PromisePipeline(db)
+        # delete each field incase they have a custom deleter
+        # then delete ourself
+        for name in field_names:
+            deleter(name)(p, key, name)
+        p.delete(key)
+        p.execute()
+
     def __str__(self):
         return f"<class '{__name__}.{self.__class__.__name__}'>"
 
@@ -312,60 +336,3 @@ class Model(object, metaclass=ModelMeta):
         values = {k:self._data.get(k) for k in self._fields.keys()}
         args = ', '.join(f'{k}={v}' for k,v in values.items())
         return f'{self.__class__.__name__}({args})'
-
-
-
-
-class DNS_Record(Model):
-    domain = Field(String, primary_key=True)
-    A = Field(IPV4Address)
-    AAAA = Field(IPV6Address, required=True)
-    l = Field(List(String))
-
-
-from redis_mock import Redis
-redis = Redis()
-
-
-print('create')
-r = DNS_Record.create(redis,
-    domain='abc.example.com',
-    A=IPv4Address('127.0.0.1'),
-    AAAA=IPv6Address('::1'),
-    l=['a', 'b'])
-print(r.domain, r.A, r.AAAA)
-
-print('load')
-r = DNS_Record.load(redis, 'abc.example.com')
-print(r.domain, r.A, r.AAAA)
-
-r = DNS_Record.load(redis, 'abc.example.com', DNS_Record.A)
-print(r.domain, r.A, r.AAAA)
-
-r.A = IPv4Address('10.0.0.1')
-r.save(redis, DNS_Record.A)
-
-r = DNS_Record.load(redis, 'abc.example.com', DNS_Record.A)
-print(r.domain, r.A, r.AAAA)
-
-r = DNS_Record.load(redis, 'abc.example.com', DNS_Record.A, DNS_Record.l)
-print(r.domain, r.A, r.AAAA, r.l)
-r.load_fields(redis, DNS_Record.AAAA)
-print(r.domain, r.A, r.AAAA, r.l)
-
-print(type(r.A))
-
-print(r)
-print(repr(r))
-
-try:
-    DNS_Record.create(redis, domain='abc', A=123, AAAA=IPv6Address('::1'))
-    assert False
-except Exception as e:
-    print(e)
-
-try:
-    DNS_Record.create(redis, domain='abc', A=IPv4Address('127.0.0.1'))
-    assert False
-except Exception as e:
-    print(e)

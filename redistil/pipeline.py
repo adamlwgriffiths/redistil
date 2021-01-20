@@ -23,35 +23,26 @@ class PromisePipeline:
         self.promises.append(Promise())
         return self.promises[-1]
 
-    def hget(self, name, field):
-        value = self.pipeline.hget(name, field)
-        return self._create_promise()
+    def __getattr__(self, name):
+        '''Pass function and attribute access through to the Redis pipeline.
+        If it's a function, wrap the function in another function that returns a promise.
+        If it's not a function, just return it.
+        This may not work for everything, but all the functions we care about work so far.
+        '''
+        if hasattr(self.pipeline, name):
+            attr = getattr(self.pipeline, name)
 
-    def hset(self, name, field, value):
-        self.pipeline.hset(name, field, value)
-        return self._create_promise()
+            if not callable(attr):
+                return attr
 
-    def lrange(self, name, start, stop):
-        self.pipeline.lrange(name, start, stop)
-        return self._create_promise()
-
-    def smembers(self, name):
-        self.pipeline.smembers(name)
-        return self._create_promise()
-
-    def delete(self, name):
-        self.pipeline.delete(name)
-        return self._create_promise()
-
-    def rpush(self, name, value):
-        self.pipeline.rpush(name, value)
-        return self._create_promise()
-
-    def sadd(self, name, value):
-        self.pipeline.sadd(name, value)
-        return self._create_promise()
+            def wrap(*args, **kwargs):
+                attr(*args, **kwargs)
+                return self._create_promise()
+            return wrap
 
     def execute(self):
+        '''Execute the pipeline, take the resulting values and assign them to each promise.
+        '''
         values = self.pipeline.execute()
         for promise, value in zip(self.promises, values):
             if isinstance(value, Exception):
