@@ -164,3 +164,22 @@ class TestModel(unittest.TestCase):
         self.assertFalse(self.redis.exists(model.redis_key))
         self.assertFalse(self.redis.exists(model.redis_key + '::set'))
         self.assertFalse(self.redis.exists(model.redis_key + '::list'))
+
+    def test_delete(self):
+        # delete an incomplete field
+        model = MyModel.create(self.redis,
+            string='string',
+            ipv6address=IPv6Address('::1'),
+        )
+
+        model.delete(self.redis)
+        self.assertFalse(self.redis.exists(model.redis_key))
+        self.assertFalse(self.redis.exists(model.redis_key + '::set'))
+        self.assertFalse(self.redis.exists(model.redis_key + '::list'))
+
+        # delete non-created object
+        model = MyModel(
+            string='string',
+            ipv6address=IPv6Address('::1'),
+        )
+        model.delete(self.redis)
