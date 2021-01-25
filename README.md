@@ -36,7 +36,7 @@ class MyModel(Model):
     string = Field(String, primary_key=True)
     integer = Field(Integer)
     float = Field(Float)
-    list = Field(List(String))
+    list = List(String)
 
 
 redis = Redis()
@@ -70,12 +70,28 @@ print(obj.list)
 # update and selectively save fields
 obj.list = ['d', 'e', 'f']
 obj.save(redis, MyModel.list)
+
+# determine where values are saved so we can bypass the object model if we want to
+MyModel.key('test string')
+# 'MyModel::test string'
+MyModel.string.field()
+# 'string'
+MyModel.list.key(MyModel.key('test string'))
+# 'MyModel::test string::list'
 ```
 
 
 ## Usage
 
 ### Available Fields
+
+Properties:
+
+* Field - Indicates a Redish hash field
+* Set - A set associated with the model
+* List - A list associated with the model
+
+Cerberus 'dict' type is not supported, instead you should flatten them into the model itself.
 
 Field types:
 
@@ -91,10 +107,7 @@ Field types:
 * IPAddress
 * IPV4Address
 * IPV6Address
-* List
-* Set
 
-Cerberus 'dict' type is not supported, instead you should flatten them into the model itself.
 
 
 ### Models
@@ -106,12 +119,12 @@ Each field is specified as a class attribute which is a Field object containing 
 For example:
 
 ```
+>>> from redis import Redis
 >>> from redistil import Model, Field, String, List
->>> from modelus.backends.memory import MemoryDatabase
 >>>
 >>> class MyModel(Model):
 ...     id = Field(String, primary_key=True)
-...     values = Field(List(String), required=True)
+...     values = List(String, required=True)
 ...
 >>> redis = Redis()
 >>> mymodel = MyModel.create(redis, id='abc', values=['a', 'b', 'c'])
@@ -146,44 +159,6 @@ class MyModel(Model):
     class Validator(Model.Validator):
         def _normalize_default_setter_generated_string(self, document):
             return 'abcdefg'
-```
-
-### Adding new Field Types
-
-New field types should be as simple as sub-classing FieldType.
-
-A type *must* define the following attributes:
-* schema - Cerberus schema for the specified type
-
-A type *may* define the following attributes:
-* types_mapping - A Cerberus dictionary which is automatically added to the Cerberus.Validator.types_mapping.
-* save - A function which stores the field, with signature save(db, key, field, value)
-* load - A function which loads the field, with signature load(db, key, field)
-* to_db - A function which converts the value to a Redis safe representation, with signature to_db(value)
-* from_db - A function which converts the value to a Python representation, with signature from_db(value)
-
-```
-# Example of IPAddress which is either IPv4Address or IPv6Address
-class IPAddress(FieldType):
-    schema = {'type': 'ipaddress'}
-    types_mapping = {'ipaddress': TypeDefinition('ipaddress', (IPv4Address, IPv6Address), ())}
-    to_db = lambda self, value: str(value)
-    from_db = lambda self, value: ip_address(value.decode('utf-8'))
-
-# Example of a more complex field, which saves a list of values into a different Redis key
-class List(ContainerType):
-    schema = {'type': 'list'}
-    save = lambda self, db, key, field, value: replace_list(db, f'{key}::{field}', value)
-    load = lambda self, db, key, field: db.lrange(f'{key}::{field}', 0, -1)
-
-    def __set_name__(self, owner, name):
-        self.type.__set_name__(owner, name)
-
-    def set(self, instance, value):
-        return [self.type.set(instance, item) for item in value]
-
-    def get(self, instance, value):
-        return [self.type.get(instance, item) for item in value]
 ```
 
 

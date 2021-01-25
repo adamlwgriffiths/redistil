@@ -16,8 +16,8 @@ class MyModel(Model):
     binary = Field(Binary)
     ipv4address = Field(IPV4Address)
     ipv6address = Field(IPV6Address, required=True)
-    set = Field(Set(Integer))
-    list = Field(List(String))
+    set = Set(Integer)
+    list = List(String)
 
 class TestModel(unittest.TestCase):
     def setUp(self):
@@ -25,6 +25,11 @@ class TestModel(unittest.TestCase):
 
     def tearDown(self):
         self.redis.flushall()
+
+    def test_key_field(self):
+        self.assertEqual(MyModel.key('abc'), 'MyModel::abc')
+        self.assertEqual(MyModel.string.field('abc'), 'string')
+        self.assertEqual(MyModel.set.key(MyModel.key('abc')), 'MyModel::abc::set')
 
     def test_create(self):
         # missing primary key
@@ -157,8 +162,8 @@ class TestModel(unittest.TestCase):
         self.assertEqual(model.binary, b'123')
         self.assertEqual(model.ipv4address, IPv4Address('127.0.0.1'))
         self.assertEqual(model.ipv6address, IPv6Address('::1'))
-        self.assertEqual(model.set, {b'1', b'2', b'3'})
-        self.assertEqual(model.list, [b'a', b'b', b'c'])
+        self.assertEqual(model.set, {1, 2, 3})
+        self.assertEqual(model.list, ['a', 'b', 'c'])
 
         model.delete(self.redis)
         self.assertFalse(self.redis.exists(model.redis_key))
@@ -183,3 +188,13 @@ class TestModel(unittest.TestCase):
             ipv6address=IPv6Address('::1'),
         )
         model.delete(self.redis)
+
+    def test_simple_model(self):
+        class TestModel(Model):
+            string = Field(String, primary_key=True)
+            value = Field(String)
+
+        model = TestModel.create(self.redis, string='string')
+
+        model = TestModel(string='string')
+        model.save(self.redis)
