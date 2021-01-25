@@ -28,7 +28,7 @@ class TestModel(unittest.TestCase):
 
     def test_key_field(self):
         self.assertEqual(MyModel.key('abc'), 'MyModel::abc')
-        self.assertEqual(MyModel.string.field('abc'), 'string')
+        self.assertEqual(MyModel.string.field(), 'string')
         self.assertEqual(MyModel.set.key(MyModel.key('abc')), 'MyModel::abc::set')
 
     def test_create(self):

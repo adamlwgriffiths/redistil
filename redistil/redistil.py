@@ -68,7 +68,7 @@ class Field(FieldBase):
     def delete(self, db, key, field):
         return None
 
-    def field(self, key):
+    def field(self):
         return self.name
 
 
