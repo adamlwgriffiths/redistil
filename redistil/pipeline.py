@@ -1,4 +1,3 @@
-from redis_mock import Redis
 
 class Promise:
     def __init__(self):
